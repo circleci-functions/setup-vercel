@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
 
 	"github.com/circleci-functions/toolkit/sdk"
 
 	"github.com/circleci-functions/setup-vercel/handoff"
+	"github.com/circleci-functions/setup-vercel/vercelcli"
 )
 
 type deployCmd struct {
@@ -34,7 +34,7 @@ func (c *deployCmd) Run(ctx context.Context, client *sdk.Client) error {
 	if err != nil {
 		return err
 	}
-	cli, err := c.install(ctx, client, s.creds.Token)
+	cli, err := c.install(ctx, client, s.creds.Token, c.APIURL)
 	if err != nil {
 		return err
 	}
@@ -51,12 +51,12 @@ func (c *deployCmd) Run(ctx context.Context, client *sdk.Client) error {
 	if err != nil {
 		return err
 	}
-	url := lastLine(out)
-	if url == "" {
-		return errors.New("vercel deploy printed no deployment URL")
+	ref, err := vercelcli.DeploymentRef(out)
+	if err != nil {
+		return err
 	}
 
-	d, err := s.waiter(timeout).Ready(ctx, url)
+	d, err := s.waiter(timeout).Ready(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -82,12 +82,9 @@ func (c *deployCmd) deployArgs() []string {
 	if c.Staged {
 		args = append(args, "--skip-domain")
 	}
+	if sha := os.Getenv("CIRCLE_SHA1"); sha != "" {
+		// So promote can find this deployment from a later job.
+		args = append(args, "--meta", metaCommitSHA+"="+sha)
+	}
 	return args
-}
-
-// lastLine returns the last non-empty line of the CLI's stdout, which is the
-// deployment URL.
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
 }

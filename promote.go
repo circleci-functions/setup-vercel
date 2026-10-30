@@ -74,12 +74,14 @@ func (c *promoteCmd) resolve(ctx context.Context, s session) (vercel.Deployment,
 	if sha == "" {
 		return vercel.Deployment{}, errors.New("no deployment to promote: set --deployment, or run deploy earlier in the job")
 	}
-	ds, err := s.api.ListDeployments(ctx, vercel.ListOptions{ProjectID: s.project.ID, SHA: sha, Target: "production", State: vercel.StateReady})
+	// Not filtered on the commit by the API: that only matches the commit Vercel's
+	// Git integration records, and deploy records its own.
+	ds, err := s.api.ListDeployments(ctx, vercel.ListOptions{ProjectID: s.project.ID, Target: "production", State: vercel.StateReady, Limit: 100})
 	if err != nil {
 		return vercel.Deployment{}, err
 	}
 	for _, d := range ds {
-		if d.DeploymentID() != s.project.ProductionID() {
+		if d.DeploymentID() != s.project.ProductionID() && (d.Meta[metaCommitSHA] == sha || d.Meta["githubCommitSha"] == sha) {
 			return s.api.Deployment(ctx, d.DeploymentID())
 		}
 	}

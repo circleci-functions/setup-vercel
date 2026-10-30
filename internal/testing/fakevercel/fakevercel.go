@@ -7,13 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 )
 
 // Token is the only bearer token the server accepts.
-const Token = "test-token"
+const Token = "testtoken" // The Vercel CLI rejects a token with a dash in it.
 
 // Deployment is a deployment the server knows. States are reported in turn,
 // one per lookup, and the last one sticks.
@@ -26,6 +27,7 @@ type Deployment struct {
 	ErrorMessage        string
 	IsRollbackCandidate *bool
 	BuildLog            []string
+	Meta                map[string]string
 
 	lookups int
 }
@@ -41,6 +43,8 @@ type Server struct {
 	linked      bool
 	aliasJob    string
 	requests    []string
+	created     []map[string]any
+	unhandled   []string
 }
 
 // New starts a server for projectID, registering cleanup with t.
@@ -54,6 +58,14 @@ func New(t *testing.T, projectID string) *Server {
 	mux.HandleFunc("GET /v3/deployments/{id}/events", s.events)
 	mux.HandleFunc("POST /v10/projects/{project}/promote/{id}", s.alias("promote"))
 	mux.HandleFunc("POST /v1/projects/{project}/rollback/{id}", s.alias("rollback"))
+	// What the Vercel CLI calls for pull and deploy.
+	mux.HandleFunc("GET /v2/user", s.user)
+	mux.HandleFunc("GET /teams/{id}", s.team)
+	mux.HandleFunc("GET /v2/teams/{id}", s.team)
+	mux.HandleFunc("GET /v3/env/pull/{project}/{target}", s.envPull)
+	mux.HandleFunc("POST /v2/files", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, map[string]any{}) })
+	mux.HandleFunc("POST /v13/deployments", s.create)
+	mux.HandleFunc("/", s.notFound)
 	srv := httptest.NewServer(s.auth(mux))
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL
@@ -95,6 +107,21 @@ func (s *Server) FailAliasJobs() {
 	s.aliasJob = "failed"
 }
 
+// Created returns the request bodies of the deployments created so far.
+func (s *Server) Created() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.created)
+}
+
+// Unhandled returns the requests no route matched, which a test should fail on:
+// the Vercel CLI calls something the fake does not implement.
+func (s *Server) Unhandled() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.unhandled)
+}
+
 // Requests returns "METHOD path?query" for every request so far.
 func (s *Server) Requests() []string {
 	s.mu.Lock()
@@ -131,6 +158,69 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 		p["lastAliasRequest"] = map[string]string{"toDeploymentId": s.production, "jobStatus": s.aliasJob}
 	}
 	writeJSON(w, p)
+}
+
+func (s *Server) user(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{"user": map[string]any{
+		"id": "user_1", "uid": "user_1", "username": "tester", "email": "tester@example.com", "defaultTeamId": "team_1", "version": "northstar",
+	}})
+}
+
+func (s *Server) team(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"id": r.PathValue("id"), "slug": "acme", "name": "Acme"})
+}
+
+func (s *Server) envPull(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("project") != s.ProjectID {
+		writeError(w, http.StatusNotFound, "not_found", "Project not found")
+		return
+	}
+	writeJSON(w, map[string]any{"env": map[string]string{"GREETING": "hello from " + r.PathValue("target")}})
+}
+
+// create makes a READY deployment from what the CLI sends.
+func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created = append(s.created, body)
+	n := len(s.created)
+	d := &Deployment{ID: "dpl_cli" + strconv.Itoa(n), URL: "my-app-cli" + strconv.Itoa(n) + ".vercel.app"}
+	if t, _ := body["target"].(string); t != "" {
+		d.Target = t
+	}
+	if meta, ok := body["meta"].(map[string]any); ok {
+		d.Meta = map[string]string{}
+		for k, v := range meta {
+			if s, ok := v.(string); ok {
+				d.Meta[k] = s
+			}
+		}
+	}
+	s.deployments = append(s.deployments, d)
+	resp := d.json("id")
+	resp["name"] = "my-app"
+	resp["projectId"] = s.ProjectID
+	resp["ownerId"] = "team_1"
+	resp["createdAt"] = 1
+	resp["alias"] = []string{}
+	resp["build"] = map[string]any{"env": []string{}}
+	resp["version"] = 2
+	resp["type"] = "LAMBDAS"
+	resp["status"] = d.state()
+	resp["creator"] = map[string]string{"uid": "user_1"}
+	writeJSON(w, resp)
+}
+
+func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.unhandled = append(s.unhandled, r.Method+" "+r.URL.RequestURI())
+	s.mu.Unlock()
+	writeError(w, http.StatusNotFound, "not_found", "The fake Vercel API has no route for this")
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +314,7 @@ func (d *Deployment) json(idKey string) map[string]any {
 		"url":          d.URL,
 		"readyState":   d.state(),
 		"inspectorUrl": "https://vercel.com/acme/my-app/" + strings.TrimPrefix(d.ID, "dpl_"),
-		"meta":         map[string]string{"githubCommitSha": d.SHA},
+		"meta":         d.meta(),
 	}
 	if d.Target != "" {
 		m["target"] = d.Target
@@ -234,6 +324,17 @@ func (d *Deployment) json(idKey string) map[string]any {
 	}
 	if d.IsRollbackCandidate != nil {
 		m["isRollbackCandidate"] = *d.IsRollbackCandidate
+	}
+	return m
+}
+
+func (d *Deployment) meta() map[string]string {
+	m := map[string]string{}
+	for k, v := range d.Meta {
+		m[k] = v
+	}
+	if d.SHA != "" {
+		m["githubCommitSha"] = d.SHA
 	}
 	return m
 }

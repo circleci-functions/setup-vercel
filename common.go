@@ -66,7 +66,12 @@ type installFlags struct {
 	CacheNonce string `name:"cache-nonce" hidden:"" default:"" help:"Partition the Vercel CLI cache."`
 }
 
-func (f installFlags) install(ctx context.Context, client *sdk.Client, token string) (vercelcli.CLI, error) {
+// metaCommitSHA is the deployment metadata deploy records the job's commit in.
+const metaCommitSHA = "circleciCommitSha"
+
+// install installs the CLI. An apiURL other than Vercel's, as tests pass, is
+// handed to the CLI too, so that it calls the same API.
+func (f installFlags) install(ctx context.Context, client *sdk.Client, token, apiURL string) (vercelcli.CLI, error) {
 	version := f.CLIVersion
 	if version == "" {
 		version = vercelcli.DefaultVersion
@@ -78,8 +83,20 @@ func (f installFlags) install(ctx context.Context, client *sdk.Client, token str
 		CacheNonce: f.CacheNonce,
 		Log:        os.Stderr,
 	}.Ensure(ctx)
+	if err != nil {
+		return cli, err
+	}
 	cli.Token = token
-	return cli, err
+	if apiURL != vercel.DefaultAPIURL {
+		dir, err := os.MkdirTemp("", "setup-vercel-config-")
+		if err != nil {
+			return cli, err
+		}
+		if cli.GlobalConfig, err = vercelcli.WriteGlobalConfig(dir, apiURL); err != nil {
+			return cli, err
+		}
+	}
+	return cli, nil
 }
 
 // session is what every command starts from: credentials checked against the

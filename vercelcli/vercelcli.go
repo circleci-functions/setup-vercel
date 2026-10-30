@@ -4,6 +4,7 @@ package vercelcli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +44,23 @@ type CLI struct {
 	Prefix  string
 	Version string
 	Token   string
-	Log     io.Writer
+	// GlobalConfig, when set, is a directory holding the CLI's global
+	// config.json, passed with --global-config.
+	GlobalConfig string
+	Log          io.Writer
+}
+
+// WriteGlobalConfig writes a global config to dir that sends the CLI's API
+// calls to apiURL instead of Vercel's, and returns dir.
+func WriteGlobalConfig(dir, apiURL string) (string, error) {
+	b, err := json.Marshal(map[string]string{"api": apiURL})
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, os.WriteFile(filepath.Join(dir, "config.json"), b, 0o600)
 }
 
 // Ensure returns the CLI, installing it if neither an earlier run nor the job
@@ -138,6 +155,9 @@ func (c CLI) Link(binDir string) (string, error) {
 // log, and returns its stdout.
 func (c CLI) Run(ctx context.Context, dir string, args ...string) (string, error) {
 	args = append(args, "--token", c.Token)
+	if c.GlobalConfig != "" {
+		args = append(args, "--global-config", c.GlobalConfig)
+	}
 	cmd := exec.CommandContext(ctx, Bin(c.Prefix), args...)
 	cmd.Dir = dir
 	var stdout bytes.Buffer
@@ -147,6 +167,34 @@ func (c CLI) Run(ctx context.Context, dir string, args ...string) (string, error
 		return stdout.String(), fmt.Errorf("vercel %s: %w", args[0], err)
 	}
 	return stdout.String(), nil
+}
+
+// DeploymentRef reads the deployment vercel deploy made from its stdout: the
+// URL on the last line, or, when the CLI detects it is run by an AI agent, the
+// deployment's ID in the JSON it prints instead.
+func DeploymentRef(stdout string) (string, error) {
+	trimmed := strings.TrimSpace(stdout)
+	if strings.HasPrefix(trimmed, "{") {
+		var out struct {
+			Deployment struct {
+				ID  string `json:"id"`
+				URL string `json:"url"`
+			} `json:"deployment"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &out); err == nil {
+			if out.Deployment.ID != "" {
+				return out.Deployment.ID, nil
+			}
+			if out.Deployment.URL != "" {
+				return out.Deployment.URL, nil
+			}
+		}
+	}
+	lines := strings.Split(trimmed, "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" && !strings.ContainsAny(last, "{} ") {
+		return last, nil
+	}
+	return "", errors.New("vercel deploy printed no deployment URL")
 }
 
 // Pull links dir to the project and fetches its settings and environment

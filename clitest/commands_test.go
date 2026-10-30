@@ -76,6 +76,18 @@ func TestPromote_FindsTheStagedDeploymentForTheCommit(t *testing.T) {
 	assert.Check(t, cmp.Equal(e.exported(t)["VERCEL_DEPLOYMENT_URL"], "https://staged.vercel.app"))
 }
 
+// deploy records the job's commit itself, since a CLI deployment may carry no
+// commit Vercel's own filter matches.
+func TestPromote_FindsADeploymentTaggedByDeploy(t *testing.T) {
+	e := newEnv(t)
+	e.vercel.Add(&fakevercel.Deployment{ID: "dpl_other", URL: "other.vercel.app", Target: "production", Meta: map[string]string{"circleciCommitSha": "zzz"}})
+	e.vercel.Add(&fakevercel.Deployment{ID: "dpl_staged", URL: "staged.vercel.app", Target: "production", Meta: map[string]string{"circleciCommitSha": "abc123"}})
+
+	out, err := e.run(t, "promote")
+	assert.NilError(t, err, out)
+	assert.Check(t, cmp.Equal(e.vercel.Production(), "dpl_staged"))
+}
+
 func TestPromote_PrefersTheDeploymentFromAnEarlierStep(t *testing.T) {
 	e := newEnv(t)
 	e.vercel.Add(&fakevercel.Deployment{ID: "dpl_a", URL: "a.vercel.app", Target: "production", SHA: "abc123"})
