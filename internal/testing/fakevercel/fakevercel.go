@@ -42,6 +42,7 @@ type Server struct {
 	production  string
 	linked      bool
 	aliasJob    string
+	aliasReq    *aliasRequest
 	requests    []string
 	created     []map[string]any
 	unhandled   []string
@@ -122,6 +123,15 @@ func (s *Server) Unhandled() []string {
 	return slices.Clone(s.unhandled)
 }
 
+// aliasRequest is a promote or rollback. Like Vercel's, it moves the
+// production target at once but runs as a job, in progress for the first
+// project lookup after it.
+type aliasRequest struct {
+	kind    string
+	to      string
+	lookups int
+}
+
 // Requests returns "METHOD path?query" for every request so far.
 func (s *Server) Requests() []string {
 	s.mu.Lock()
@@ -155,7 +165,10 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.production != "" {
 		p["targets"] = map[string]any{"production": map[string]string{"id": s.production}}
-		p["lastAliasRequest"] = map[string]string{"toDeploymentId": s.production, "jobStatus": s.aliasJob}
+	}
+	if r := s.aliasReq; r != nil {
+		p["lastAliasRequest"] = map[string]string{"type": r.kind, "toDeploymentId": r.to, "jobStatus": s.aliasStatus()}
+		r.lookups++
 	}
 	writeJSON(w, p)
 }
@@ -293,9 +306,23 @@ func (s *Server) alias(kind string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "bad_request", "Cannot promote a preview")
 			return
 		}
+		if s.aliasReq != nil && s.aliasStatus() == "in-progress" {
+			writeError(w, http.StatusConflict, "conflict", "A promote is already pending/in-progress for "+s.ProjectID)
+			return
+		}
 		s.production = d.ID
+		s.aliasReq = &aliasRequest{kind: kind, to: d.ID}
 		w.WriteHeader(http.StatusCreated)
 	}
+}
+
+// aliasStatus is the job status of the latest promote or rollback. Callers
+// hold s.mu.
+func (s *Server) aliasStatus() string {
+	if s.aliasReq.lookups == 0 {
+		return "in-progress"
+	}
+	return s.aliasJob
 }
 
 // find matches a deployment by ID or host. Callers hold s.mu.

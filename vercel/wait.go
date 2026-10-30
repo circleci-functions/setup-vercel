@@ -79,8 +79,10 @@ func (w Waiter) ForCommit(ctx context.Context, project Project, sha, target stri
 	}
 }
 
-// Alias waits for production to point at deploymentID after a promote or
-// rollback.
+// Alias waits for the promote or rollback that points production at
+// deploymentID to finish. Vercel moves the production target as soon as it is
+// asked, but the switch runs as a job, and another promote or rollback is
+// refused until it is done.
 func (w Waiter) Alias(ctx context.Context, projectID, deploymentID string) error {
 	ctx, cancel := context.WithTimeout(ctx, w.Timeout)
 	defer cancel()
@@ -93,18 +95,41 @@ func (w Waiter) Alias(ctx context.Context, projectID, deploymentID string) error
 			}
 			return err
 		}
-		if req := p.LastAliasRequest; req != nil && req.ToDeploymentID == deploymentID {
-			switch req.JobStatus {
-			case "succeeded":
+		req := p.LastAliasRequest
+		switch {
+		case req == nil:
+			// Nothing to wait on: the project reports no switch at all.
+			if p.ProductionID() == deploymentID {
 				return nil
-			case "failed":
-				return fmt.Errorf("vercel could not point production at %s", deploymentID)
 			}
-		} else if p.ProductionID() == deploymentID {
+		case req.ToDeploymentID == deploymentID && req.JobStatus == "succeeded":
 			return nil
+		case req.ToDeploymentID == deploymentID && req.JobStatus == "failed":
+			return fmt.Errorf("vercel could not point production at %s", deploymentID)
 		}
 		if err := sleep(ctx, w.Interval); err != nil {
 			return fmt.Errorf("production does not point at %s after %s; it may still be switching over", deploymentID, w.Timeout)
+		}
+	}
+}
+
+// Idle waits until the project has no promote or rollback in progress, since
+// Vercel refuses to start another one until then.
+func (w Waiter) Idle(ctx context.Context, projectID string) error {
+	ctx, cancel := context.WithTimeout(ctx, w.Timeout)
+	defer cancel()
+
+	for {
+		p, err := w.Client.Project(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		if req := p.LastAliasRequest; req == nil || (req.JobStatus != "pending" && req.JobStatus != "in-progress") {
+			return nil
+		}
+		fmt.Fprintf(w.Log, "setup-vercel: waiting for the %s to %s to finish\n", p.LastAliasRequest.Type, p.LastAliasRequest.ToDeploymentID)
+		if err := sleep(ctx, w.Interval); err != nil {
+			return fmt.Errorf("an earlier %s is still in progress after %s", p.LastAliasRequest.Type, w.Timeout)
 		}
 	}
 }

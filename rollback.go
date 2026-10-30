@@ -37,6 +37,9 @@ func (c *rollbackCmd) Run(ctx context.Context, client *sdk.Client) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "setup-vercel: rolling production back to %s\n", d.HTTPSURL())
+	if err := s.waiter(timeout).Idle(ctx, s.project.ID); err != nil {
+		return err
+	}
 	if err := s.api.Rollback(ctx, s.project.ID, d.DeploymentID()); err != nil {
 		return fmt.Errorf("roll back to %s: %w", d.HTTPSURL(), err)
 	}

@@ -130,6 +130,20 @@ func TestRollback_ToThePreviousProductionDeployment(t *testing.T) {
 	assert.Check(t, cmp.Equal(e.exported(t)["VERCEL_DEPLOYMENT_ID"], "dpl_1"))
 }
 
+// The README's flow, run back to back: promote, then roll straight back.
+func TestRollback_RightAfterAPromote(t *testing.T) {
+	e := newEnv(t)
+	e.vercel.Add(&fakevercel.Deployment{ID: "dpl_1", URL: "one.vercel.app", Target: "production", IsRollbackCandidate: ptr(true)})
+	e.vercel.SetProduction("dpl_1")
+	e.vercel.Add(&fakevercel.Deployment{ID: "dpl_2", URL: "two.vercel.app", Target: "production", SHA: "abc123", IsRollbackCandidate: ptr(true)})
+
+	out, err := e.run(t, "promote", "--deployment=dpl_2")
+	assert.NilError(t, err, out)
+	out, err = e.run(t, "rollback")
+	assert.NilError(t, err, out)
+	assert.Check(t, cmp.Equal(e.vercel.Production(), "dpl_1"))
+}
+
 func TestRollback_NothingToRollBackTo(t *testing.T) {
 	e := newEnv(t)
 	e.vercel.Add(&fakevercel.Deployment{ID: "dpl_1", URL: "one.vercel.app", Target: "production", IsRollbackCandidate: ptr(true)})

@@ -45,6 +45,9 @@ func (c *promoteCmd) Run(ctx context.Context, client *sdk.Client) error {
 		return handoff.Publish(ctx, client, "promote", d, os.Stderr)
 	}
 	fmt.Fprintf(os.Stderr, "setup-vercel: promoting %s to production\n", d.HTTPSURL())
+	if err := s.waiter(timeout).Idle(ctx, s.project.ID); err != nil {
+		return err
+	}
 	if err := s.api.Promote(ctx, s.project.ID, d.DeploymentID()); err != nil {
 		return fmt.Errorf("promote %s: %w", d.HTTPSURL(), err)
 	}
