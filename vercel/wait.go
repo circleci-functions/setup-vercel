@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -130,6 +131,26 @@ func (w Waiter) Idle(ctx context.Context, projectID string) error {
 		fmt.Fprintf(w.Log, "setup-vercel: waiting for the %s to %s to finish\n", p.LastAliasRequest.Type, p.LastAliasRequest.ToDeploymentID)
 		if err := sleep(ctx, w.Interval); err != nil {
 			return fmt.Errorf("an earlier %s is still in progress after %s", p.LastAliasRequest.Type, w.Timeout)
+		}
+	}
+}
+
+// Switch runs a promote or rollback, retrying while Vercel refuses it with a
+// conflict because an earlier one is still running. Vercel does not always
+// report that earlier one, so the refusal is the only sign of it.
+func (w Waiter) Switch(ctx context.Context, do func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, w.Timeout)
+	defer cancel()
+
+	for {
+		err := do(ctx)
+		var apiErr *APIError
+		if err == nil || !errors.As(err, &apiErr) || apiErr.Status != http.StatusConflict {
+			return err
+		}
+		fmt.Fprintf(w.Log, "setup-vercel: %s; retrying\n", apiErr.Message)
+		if sleep(ctx, w.Interval) != nil {
+			return fmt.Errorf("%w, still after %s", err, w.Timeout)
 		}
 	}
 }

@@ -43,6 +43,8 @@ type Server struct {
 	linked      bool
 	aliasJob    string
 	aliasReq    *aliasRequest
+	hideAlias   bool
+	conflicts   int
 	requests    []string
 	created     []map[string]any
 	unhandled   []string
@@ -85,6 +87,15 @@ func (s *Server) SetProduction(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.production = id
+}
+
+// HideAliasRequests leaves lastAliasRequest out of project responses, as
+// Vercel does for some projects. A promote or rollback is then refused once,
+// with a conflict, straight after another.
+func (s *Server) HideAliasRequests() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hideAlias = true
 }
 
 // Production returns the deployment production points at.
@@ -166,7 +177,7 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 	if s.production != "" {
 		p["targets"] = map[string]any{"production": map[string]string{"id": s.production}}
 	}
-	if r := s.aliasReq; r != nil {
+	if r := s.aliasReq; r != nil && !s.hideAlias {
 		p["lastAliasRequest"] = map[string]string{"type": r.kind, "toDeploymentId": r.to, "jobStatus": s.aliasStatus()}
 		r.lookups++
 	}
@@ -306,12 +317,21 @@ func (s *Server) alias(kind string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "bad_request", "Cannot promote a preview")
 			return
 		}
-		if s.aliasReq != nil && s.aliasStatus() == "in-progress" {
+		busy := s.aliasReq != nil && s.aliasStatus() == "in-progress"
+		if s.hideAlias {
+			// Nothing reads the hidden job, so it is busy until refused once.
+			busy = s.aliasReq != nil && s.conflicts == 0
+			if busy {
+				s.conflicts++
+			}
+		}
+		if busy {
 			writeError(w, http.StatusConflict, "conflict", "A promote is already pending/in-progress for "+s.ProjectID)
 			return
 		}
 		s.production = d.ID
 		s.aliasReq = &aliasRequest{kind: kind, to: d.ID}
+		s.conflicts = 0
 		w.WriteHeader(http.StatusCreated)
 	}
 }

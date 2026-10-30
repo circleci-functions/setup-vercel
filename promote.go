@@ -48,7 +48,9 @@ func (c *promoteCmd) Run(ctx context.Context, client *sdk.Client) error {
 	if err := s.waiter(timeout).Idle(ctx, s.project.ID); err != nil {
 		return err
 	}
-	if err := s.api.Promote(ctx, s.project.ID, d.DeploymentID()); err != nil {
+	if err := s.waiter(timeout).Switch(ctx, func(ctx context.Context) error {
+		return s.api.Promote(ctx, s.project.ID, d.DeploymentID())
+	}); err != nil {
 		return fmt.Errorf("promote %s: %w", d.HTTPSURL(), err)
 	}
 	if err := s.waiter(timeout).Alias(ctx, s.project.ID, d.DeploymentID()); err != nil {
