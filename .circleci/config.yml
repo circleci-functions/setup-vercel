@@ -7,6 +7,10 @@ executors:
   go:
     docker:
       - image: cimg/go:1.26
+  # The acceptance tests install the real Vercel CLI, which needs Node.js.
+  go-node:
+    docker:
+      - image: cimg/go:1.26-node
 
 jobs:
   test:
@@ -41,11 +45,32 @@ jobs:
             - setup-vercel-go-
       - run: task dry-run
 
+  # The real Vercel CLI, installed from npm, against a fake Vercel API.
+  acceptance:
+    executor: go-node
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - setup-vercel-go-{{ checksum "go.sum" }}-
+            - setup-vercel-go-
+      - run:
+          name: Run acceptance tests
+          command: task acceptance
+          environment:
+            # The CLI install goes through the job's own cache, so the
+            # round-trip is exercised for real. The suite fails rather than
+            # falling back if it can't reach it.
+            TOOLKIT_CACHE_MODE: live
+      - store_test_results:
+          path: test-results
+
 workflows:
   test-publish:
     jobs:
       - test
       - build
+      - acceptance
       - toolkit/release-pr:
           name: release-pr
           executor: go
@@ -55,6 +80,7 @@ workflows:
           requires: &release-requires
             - test
             - build
+            - acceptance
           context: [github-release]
           filters:
             branches:

@@ -48,7 +48,15 @@ func invocations(t *testing.T, argLog string) []string {
 	t.Helper()
 	b, err := os.ReadFile(argLog)
 	assert.NilError(t, err)
-	return strings.Split(strings.TrimSpace(string(b)), "\n")
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for i, l := range lines {
+		// Every call points the CLI at the fake API through a temporary
+		// global config; which directory is not worth asserting.
+		if j := strings.Index(l, " --global-config "); j >= 0 {
+			lines[i] = l[:j]
+		}
+	}
+	return lines
 }
 
 func TestDeploy_PreviewBuildsInTheJob(t *testing.T) {
@@ -59,9 +67,9 @@ func TestDeploy_PreviewBuildsInTheJob(t *testing.T) {
 	out, err := e.run(t, "deploy", "--install-dir="+installDir)
 	assert.NilError(t, err, out)
 	assert.Check(t, cmp.DeepEqual(invocations(t, argLog), []string{
-		"pull --yes --environment=preview --token test-token",
-		"build --token test-token",
-		"deploy --no-wait --prebuilt --token test-token",
+		"pull --yes --environment=preview --token testtoken",
+		"build --token testtoken",
+		"deploy --no-wait --prebuilt --meta circleciCommitSha=abc123 --token testtoken",
 	}))
 	assert.Check(t, cmp.Equal(e.exported(t)["VERCEL_DEPLOYMENT_URL"], "https://my-app-abc.vercel.app"))
 	assert.Check(t, !strings.Contains(out, fakevercel.Token), "the token was printed:\n%s", out)
@@ -75,8 +83,8 @@ func TestDeploy_StagedProduction(t *testing.T) {
 	out, err := e.run(t, "deploy", "--install-dir="+installDir, "--environment=production", "--staged", "--no-prebuilt")
 	assert.NilError(t, err, out)
 	assert.Check(t, cmp.DeepEqual(invocations(t, argLog), []string{
-		"pull --yes --environment=production --token test-token",
-		"deploy --no-wait --prod --skip-domain --token test-token",
+		"pull --yes --environment=production --token testtoken",
+		"deploy --no-wait --prod --skip-domain --meta circleciCommitSha=abc123 --token testtoken",
 	}))
 }
 
@@ -110,7 +118,7 @@ func TestSetup_LinksTheCLIOntoPath(t *testing.T) {
 
 	out, err := e.run(t, "--install-dir="+installDir, "--bin-dir="+e.sandbox.BinDir)
 	assert.NilError(t, err, out)
-	assert.Check(t, cmp.DeepEqual(invocations(t, argLog), []string{"pull --yes --environment=preview --token test-token"}))
+	assert.Check(t, cmp.DeepEqual(invocations(t, argLog), []string{"pull --yes --environment=preview --token testtoken"}))
 	_, err = os.Lstat(filepath.Join(e.sandbox.BinDir, "vercel"))
 	assert.Check(t, err)
 }

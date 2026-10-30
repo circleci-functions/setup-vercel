@@ -21,7 +21,7 @@ func (c *setupCmd) Run(ctx context.Context, client *sdk.Client) error {
 	if err != nil {
 		return err
 	}
-	cli, err := c.install(ctx, client, s.creds.Token)
+	cli, err := c.install(ctx, client, s.creds.Token, c.APIURL)
 	if err != nil {
 		return err
 	}

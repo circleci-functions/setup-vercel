@@ -21,6 +21,11 @@ tasks:
     cmds:
       - go tool gotestsum --junitfile test-results/unit.xml -- ./...
 
+  acceptance:
+    desc: Run acceptance tests with the real Vercel CLI against a fake Vercel API (needs Node.js and npm)
+    cmds:
+      - go tool gotestsum --junitfile test-results/acceptance.xml --format standard-verbose -- -tags acceptance -timeout 20m ./acceptance/...
+
   tidy:
     desc: Tidy go.mod / go.sum
     cmds:
