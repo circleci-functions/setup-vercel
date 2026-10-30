@@ -178,8 +178,15 @@ func (s *Server) envPull(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"env": map[string]string{"GREETING": "hello from " + r.PathValue("target")}})
 }
 
-// create makes a READY deployment from what the CLI sends.
+// create makes a READY deployment from what the CLI sends. Like Vercel, it
+// rejects one with no project settings unless the CLI confirmed auto-detection,
+// which the first deployment of a new project needs.
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("skipAutoDetectionConfirmation") != "1" {
+		writeError(w, http.StatusBadRequest, "missing_project_settings",
+			"The `projectSettings` object is required for new projects, but is missing in the deployment payload.")
+		return
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())

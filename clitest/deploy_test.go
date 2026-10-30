@@ -69,7 +69,7 @@ func TestDeploy_PreviewBuildsInTheJob(t *testing.T) {
 	assert.Check(t, cmp.DeepEqual(invocations(t, argLog), []string{
 		"pull --yes --environment=preview --token testtoken",
 		"build --token testtoken",
-		"deploy --no-wait --prebuilt --meta circleciCommitSha=abc123 --token testtoken",
+		"deploy --yes --no-wait --prebuilt --meta circleciCommitSha=abc123 --token testtoken",
 	}))
 	assert.Check(t, cmp.Equal(e.exported(t)["VERCEL_DEPLOYMENT_URL"], "https://my-app-abc.vercel.app"))
 	assert.Check(t, !strings.Contains(out, fakevercel.Token), "the token was printed:\n%s", out)
@@ -84,7 +84,7 @@ func TestDeploy_StagedProduction(t *testing.T) {
 	assert.NilError(t, err, out)
 	assert.Check(t, cmp.DeepEqual(invocations(t, argLog), []string{
 		"pull --yes --environment=production --token testtoken",
-		"deploy --no-wait --prod --skip-domain --meta circleciCommitSha=abc123 --token testtoken",
+		"deploy --yes --no-wait --prod --skip-domain --meta circleciCommitSha=abc123 --token testtoken",
 	}))
 }
 

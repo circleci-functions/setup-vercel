@@ -72,7 +72,9 @@ func (c *deployCmd) buildArgs() []string {
 }
 
 func (c *deployCmd) deployArgs() []string {
-	args := []string{"deploy", "--no-wait"}
+	// --yes, or Vercel rejects the first deployment of a project that has
+	// never been deployed, asking for settings the CLI would otherwise prompt for.
+	args := []string{"deploy", "--yes", "--no-wait"}
 	if c.Prebuilt {
 		args = append(args, "--prebuilt")
 	}
