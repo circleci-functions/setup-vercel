@@ -125,8 +125,9 @@ func installed(prefix string) bool {
 func (c CLI) Link(binDir string) (string, error) {
 	if runtime.GOOS == "windows" {
 		// npm's Windows shims find node_modules relative to themselves, so
-		// they cannot be linked elsewhere; put the prefix on PATH instead.
-		if err := bashenv.AddToPath(c.Prefix); err != nil {
+		// they cannot be linked elsewhere; put the prefix on PATH instead, in
+		// the form the job's bash reads.
+		if err := bashenv.AddToPath(bashPath(c.Prefix)); err != nil {
 			return "", err
 		}
 		return c.Prefix, nil
@@ -149,6 +150,16 @@ func (c CLI) Link(binDir string) (string, error) {
 		},
 	})
 	return res.Dir, err
+}
+
+// bashPath turns a Windows path into the form Git Bash puts on PATH, since a
+// drive letter's colon would split a PATH entry: C:\Users\x becomes /c/Users/x.
+func bashPath(p string) string {
+	p = filepath.ToSlash(p)
+	if len(p) >= 2 && p[1] == ':' {
+		p = "/" + strings.ToLower(p[:1]) + p[2:]
+	}
+	return p
 }
 
 // Run runs vercel in dir with args and the token, streaming its stderr to the
