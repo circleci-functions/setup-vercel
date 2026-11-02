@@ -140,3 +140,46 @@ func TestDeployment_BuildDuration(t *testing.T) {
 	assert.Check(t, cmp.Equal(d.BuildDuration(), time.Minute))
 	assert.Check(t, cmp.Equal(vercel.Deployment{}.BuildDuration(), time.Duration(0)))
 }
+
+// Vercel moves the production target before it registers the switch; returning
+// then let a rollback straight after a promote hit "a promote is already
+// in progress".
+func TestAlias_WaitsForTheSwitchNotJustTheTarget(t *testing.T) {
+	srv, w, _ := newWaiter(t, 50*time.Millisecond)
+	srv.Add(&fakevercel.Deployment{ID: "dpl_1", URL: "a.vercel.app", Target: "production"})
+	srv.Add(&fakevercel.Deployment{ID: "dpl_2", URL: "b.vercel.app", Target: "production"})
+	assert.NilError(t, w.Client.Promote(context.Background(), "prj_1", "dpl_1"))
+	assert.NilError(t, w.Alias(context.Background(), "prj_1", "dpl_1"))
+
+	// The target moves to dpl_2, but the latest switch is still the one to dpl_1.
+	srv.SetProduction("dpl_2")
+	assert.ErrorContains(t, w.Alias(context.Background(), "prj_1", "dpl_2"), "may still be switching over")
+}
+
+func TestIdle_WaitsForASwitchInProgress(t *testing.T) {
+	srv, w, log := newWaiter(t, time.Second)
+	srv.Add(&fakevercel.Deployment{ID: "dpl_1", URL: "a.vercel.app", Target: "production"})
+	srv.Add(&fakevercel.Deployment{ID: "dpl_2", URL: "b.vercel.app", Target: "production"})
+	assert.NilError(t, w.Client.Promote(context.Background(), "prj_1", "dpl_1"))
+
+	assert.NilError(t, w.Idle(context.Background(), "prj_1"))
+	assert.Check(t, cmp.Contains(log.String(), "waiting for the promote to dpl_1 to finish"))
+	assert.NilError(t, w.Client.Rollback(context.Background(), "prj_1", "dpl_2"))
+}
+
+// Vercel does not always report a switch in progress, so a promote or rollback
+// straight after another one has to retry on the conflict.
+func TestSwitch_RetriesWhileAnotherIsRunning(t *testing.T) {
+	srv, w, log := newWaiter(t, time.Second)
+	srv.Add(&fakevercel.Deployment{ID: "dpl_1", URL: "a.vercel.app", Target: "production"})
+	srv.Add(&fakevercel.Deployment{ID: "dpl_2", URL: "b.vercel.app", Target: "production"})
+	srv.HideAliasRequests()
+	assert.NilError(t, w.Client.Promote(context.Background(), "prj_1", "dpl_1"))
+
+	err := w.Switch(context.Background(), func(ctx context.Context) error {
+		return w.Client.Rollback(ctx, "prj_1", "dpl_2")
+	})
+	assert.NilError(t, err)
+	assert.Check(t, cmp.Contains(log.String(), "already pending/in-progress"))
+	assert.Check(t, cmp.Equal(srv.Production(), "dpl_2"))
+}

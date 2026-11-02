@@ -42,6 +42,9 @@ type Server struct {
 	production  string
 	linked      bool
 	aliasJob    string
+	aliasReq    *aliasRequest
+	hideAlias   bool
+	conflicts   int
 	requests    []string
 	created     []map[string]any
 	unhandled   []string
@@ -86,6 +89,15 @@ func (s *Server) SetProduction(id string) {
 	s.production = id
 }
 
+// HideAliasRequests leaves lastAliasRequest out of project responses, as
+// Vercel does for some projects. A promote or rollback is then refused once,
+// with a conflict, straight after another.
+func (s *Server) HideAliasRequests() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hideAlias = true
+}
+
 // Production returns the deployment production points at.
 func (s *Server) Production() string {
 	s.mu.Lock()
@@ -122,6 +134,15 @@ func (s *Server) Unhandled() []string {
 	return slices.Clone(s.unhandled)
 }
 
+// aliasRequest is a promote or rollback. Like Vercel's, it moves the
+// production target at once but runs as a job, in progress for the first
+// project lookup after it.
+type aliasRequest struct {
+	kind    string
+	to      string
+	lookups int
+}
+
 // Requests returns "METHOD path?query" for every request so far.
 func (s *Server) Requests() []string {
 	s.mu.Lock()
@@ -155,7 +176,10 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.production != "" {
 		p["targets"] = map[string]any{"production": map[string]string{"id": s.production}}
-		p["lastAliasRequest"] = map[string]string{"toDeploymentId": s.production, "jobStatus": s.aliasJob}
+	}
+	if r := s.aliasReq; r != nil && !s.hideAlias {
+		p["lastAliasRequest"] = map[string]string{"type": r.kind, "toDeploymentId": r.to, "jobStatus": s.aliasStatus()}
+		r.lookups++
 	}
 	writeJSON(w, p)
 }
@@ -178,8 +202,15 @@ func (s *Server) envPull(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"env": map[string]string{"GREETING": "hello from " + r.PathValue("target")}})
 }
 
-// create makes a READY deployment from what the CLI sends.
+// create makes a READY deployment from what the CLI sends. Like Vercel, it
+// rejects one with no project settings unless the CLI confirmed auto-detection,
+// which the first deployment of a new project needs.
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("skipAutoDetectionConfirmation") != "1" {
+		writeError(w, http.StatusBadRequest, "missing_project_settings",
+			"The `projectSettings` object is required for new projects, but is missing in the deployment payload.")
+		return
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -286,9 +317,32 @@ func (s *Server) alias(kind string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "bad_request", "Cannot promote a preview")
 			return
 		}
+		busy := s.aliasReq != nil && s.aliasStatus() == "in-progress"
+		if s.hideAlias {
+			// Nothing reads the hidden job, so it is busy until refused once.
+			busy = s.aliasReq != nil && s.conflicts == 0
+			if busy {
+				s.conflicts++
+			}
+		}
+		if busy {
+			writeError(w, http.StatusConflict, "conflict", "A promote is already pending/in-progress for "+s.ProjectID)
+			return
+		}
 		s.production = d.ID
+		s.aliasReq = &aliasRequest{kind: kind, to: d.ID}
+		s.conflicts = 0
 		w.WriteHeader(http.StatusCreated)
 	}
+}
+
+// aliasStatus is the job status of the latest promote or rollback. Callers
+// hold s.mu.
+func (s *Server) aliasStatus() string {
+	if s.aliasReq.lookups == 0 {
+		return "in-progress"
+	}
+	return s.aliasJob
 }
 
 // find matches a deployment by ID or host. Callers hold s.mu.
