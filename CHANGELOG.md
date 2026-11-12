@@ -6,6 +6,14 @@ added by its release PR (see [RELEASE.md](RELEASE.md)) and becomes its GitHub re
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-12
+
+### What's Changed
+* Publish a pre-release from a branch with a pipeline parameter by @stiyyagura0901 in https://github.com/circleci-functions/setup-vercel/pull/14
+
+
+**Full Changelog**: https://github.com/circleci-functions/setup-vercel/compare/v0.2.0...v0.3.0
+
 ## [0.2.0] - 2026-11-02
 
 ### What's Changed
